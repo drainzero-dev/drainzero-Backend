@@ -2,9 +2,9 @@
 //  DrainZero Backend — Express Entry Point
 //  Run: node index.js
 // ─────────────────────────────────────────────
-
-const express = require('express');
-const cors    = require('cors');
+const express   = require('express');
+const rateLimit = require('express-rate-limit');
+const cors      = require('cors');
 require('dotenv').config();
 
 const app = express();
@@ -12,23 +12,31 @@ const app = express();
 // ── Middleware ──────────────────────────────
 app.use(cors({
   origin: [
-    'http://localhost:5173',       // Vite dev server
-    'http://localhost:3000',       // alternate dev
-    process.env.FRONTEND_URL       // Netlify URL (set in .env)
+    'http://localhost:5173',
+    'http://localhost:3000',
+    process.env.FRONTEND_URL
   ],
   credentials: true
 }));
-app.use(express.json({ limit: '10mb' }));  // 10mb for base64 doc uploads
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// ── Rate Limiter ────────────────────────────
+const agentLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max     : 10,
+  message : { error: 'Too many requests, please slow down.' }
+});
+
 // ── Routes ──────────────────────────────────
+app.use('/api/agent',     agentLimiter);
 app.use('/api/agent',     require('./routes/agent'));
 app.use('/api/analyse',   require('./routes/analyse'));
 app.use('/api/loopholes', require('./routes/loopholes'));
 app.use('/api/benefits',  require('./routes/benefits'));
 app.use('/api/documents', require('./routes/documents'));
 
-// ── Health check (Render ping + cron-job.org) ──
+// ── Health check ────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     status : 'DrainZero backend is alive',
