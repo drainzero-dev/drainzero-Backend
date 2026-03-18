@@ -1,22 +1,31 @@
 // ─────────────────────────────────────────────
 //  tools/kbSearch.js
-//  Searches DrainZero knowledge base in Supabase
-//  Uses text search (pgvector embeddings optional later)
+//  Semantic search using pgvector + Gemini embeddings
 // ─────────────────────────────────────────────
 
-const supabase = require('../utils/supabase');
+const { GoogleGenAI } = require('@google/genai');
+const supabase        = require('../utils/supabase');
 
-// ── MAIN SEARCH ──
-// Searches KB for relevant tax sections matching the query
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+async function getEmbedding(text) {
+  const result = await ai.models.embedContent({
+    model   : 'gemini-embedding-2-preview',
+    contents : text,
+    config  : { outputDimensionality: 768 }
+  });
+  return result.embeddings[0].values;
+}
+
 async function searchKB(query, limit = 5) {
   try {
-    // Text search across title + content + tags
-    // Later upgrade: replace with pgvector semantic search
-    const { data, error } = await supabase
-      .from('knowledge_base')
-      .select('id, title, category, content, section, tags, updated_fy')
-      .or(`title.ilike.%${query}%,content.ilike.%${query}%,section.ilike.%${query}%`)
-      .limit(limit);
+    const embedding = await getEmbedding(query);
+
+    const { data, error } = await supabase.rpc('match_knowledge_base', {
+      query_embedding: embedding,
+      match_threshold: 0.7,
+      match_count    : limit
+    });
 
     if (error) throw error;
 
@@ -26,45 +35,38 @@ async function searchKB(query, limit = 5) {
       query
     };
   } catch (err) {
-    console.error('[kbSearch] Error:', err.message);
-    return { results: [], count: 0, query, error: err.message };
-  }
-}
+    console.error('[kbSearch] Semantic failed, falling back to text:', err.message);
 
-// ── CATEGORY SEARCH ──
-// Get all entries for a specific category (e.g., 'deductions', 'loopholes')
-async function searchKBByCategory(category, limit = 20) {
-  try {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('knowledge_base')
       .select('id, title, category, content, section, tags, updated_fy')
-      .eq('category', category)
+      .or(`title.ilike.%${query}%,content.ilike.%${query}%,section.ilike.%${query}%`)
       .limit(limit);
 
-    if (error) throw error;
-    return { results: data || [], count: (data || []).length };
-  } catch (err) {
-    console.error('[kbSearch] Category error:', err.message);
-    return { results: [], count: 0, error: err.message };
+    return { results: data || [], count: (data || []).length, query };
   }
 }
 
-// ── SECTION SEARCH ──
-// Look up a specific section (e.g., '80C', '80D', 'HRA')
-async function searchKBBySection(section) {
-  try {
-    const { data, error } = await supabase
-      .from('knowledge_base')
-      .select('*')
-      .ilike('section', `%${section}%`)
-      .limit(3);
+async function searchKBByCategory(category, limit = 20) {
+  const { data, error } = await supabase
+    .from('knowledge_base')
+    .select('id, title, category, content, section, tags, updated_fy')
+    .eq('category', category)
+    .limit(limit);
 
-    if (error) throw error;
-    return { results: data || [], count: (data || []).length };
-  } catch (err) {
-    console.error('[kbSearch] Section error:', err.message);
-    return { results: [], count: 0, error: err.message };
-  }
+  if (error) throw error;
+  return { results: data || [], count: (data || []).length };
+}
+
+async function searchKBBySection(section) {
+  const { data, error } = await supabase
+    .from('knowledge_base')
+    .select('*')
+    .ilike('section', `%${section}%`)
+    .limit(3);
+
+  if (error) throw error;
+  return { results: data || [], count: (data || []).length };
 }
 
 module.exports = { searchKB, searchKBByCategory, searchKBBySection };
