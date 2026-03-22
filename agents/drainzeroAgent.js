@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────
 //  agents/drainzeroAgent.js
-//  DrainZero Full Agentic Loop
-//  Plan → Execute → Evaluate → Respond
-//  Max 6 iterations · 30s timeout · No tool repeats
+//  DrainZero Optimized Agent
+//  Single-pass: Context → Tool → Respond
+//  Max 2 Gemini calls per message (within 10 RPM)
 // ─────────────────────────────────────────────
 
 const { askJSON, ask }           = require('../utils/gemini');
@@ -14,17 +14,15 @@ const { findBenefits }           = require('../tools/benefitsFinder');
 const supabase                   = require('../utils/supabase');
 
 // ── CONSTANTS ──
-const MAX_ITERATIONS = 6;
-const TIMEOUT_MS     = 30000;   // 30 seconds
-const MAX_KB_CHARS   = 3000;    // trim KB results before sending to Gemini
-const MAX_HISTORY    = 6;       // last 6 messages for context (3 turns)
+const MAX_KB_CHARS   = 2000;
+const MAX_HISTORY    = 4;        // last 4 messages only
+const sleep          = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── TRIM TOOL RESULTS ──
-// Prevents token limit issues when passing results to Gemini
 function trimResult(obj, maxChars = MAX_KB_CHARS) {
   const str = typeof obj === 'string' ? obj : JSON.stringify(obj);
   if (str.length <= maxChars) return str;
-  return str.substring(0, maxChars) + '... [trimmed for brevity]';
+  return str.substring(0, maxChars) + '... [trimmed]';
 }
 
 // ── FETCH USER PROFILE ──
@@ -43,12 +41,10 @@ async function fetchProfile(userId) {
     .eq('user_id', userId)
     .single();
 
-  // Merge — income can be null for new users
   return { ...user, ...(income || {}) };
 }
 
 // ── FETCH CONVERSATION HISTORY ──
-// Only last N messages to keep context manageable
 async function fetchHistory(userId) {
   const { data } = await supabase
     .from('chat_history')
@@ -58,8 +54,6 @@ async function fetchHistory(userId) {
     .limit(MAX_HISTORY);
 
   if (!data || data.length === 0) return [];
-
-  // Reverse so oldest is first
   return data.reverse().map(m => `${m.role.toUpperCase()}: ${m.message}`);
 }
 
@@ -70,397 +64,204 @@ async function saveMessage(userId, role, message, meta = {}) {
     role,
     message,
     iterations_run: meta.iterationsRun || 0,
-    tools_used    : meta.toolsUsed || [],
-    action_cards  : meta.actionCards || [],
-    kb_citations  : meta.kbCitations || [],
+    tools_used    : meta.toolsUsed     || [],
+    action_cards  : meta.actionCards   || [],
+    kb_citations  : meta.kbCitations   || [],
     created_at    : new Date().toISOString()
   });
 }
 
 // ── BUILD SYSTEM CONTEXT ──
-// Injects full user profile so Gemini knows everything about the user
 function buildSystemContext(profile, history) {
   const historyText = history.length > 0
-    ? `\nCONVERSATION HISTORY (last ${history.length} messages):\n${history.join('\n')}`
-    : '\nCONVERSATION HISTORY: No previous messages.';
+    ? `\nRECENT CONVERSATION:\n${history.join('\n')}`
+    : '';
 
-  return `You are DrainZero, an expert Indian tax optimisation AI assistant.
-You have deep knowledge of Indian income tax law, FY 2025-26 rules, Budget 2026 changes,
-legal tax loopholes, profession-specific benefits, and state-level schemes.
+  return `You are DrainZero, an expert Indian tax optimisation AI.
+FY 2025-26 rules. Always personalise to this user's exact numbers.
 
-USER PROFILE:
-- Name: ${profile.full_name || 'User'}
-- Age: ${profile.age || 'Unknown'}
-- State: ${profile.state || 'Unknown'}
-- Profession: ${profile.profession_type || 'Unknown'} / ${profile.profession_subtype || ''}
-- Residential Status: ${profile.residential_status || 'Resident'}
-- Marital Status: ${profile.marital_status || 'Unknown'}
+USER:
+- Name: ${profile.name || profile.full_name || 'User'}
+- Age: ${profile.age || 'Unknown'}, ${profile.marital_status || ''}, ${profile.state || ''}
+- Employment: ${profile.employment_type || profile.profession_type || 'Unknown'}, ${profile.sector || ''}
 - Gross Salary: ₹${(profile.gross_salary || 0).toLocaleString('en-IN')}
-- Basic + DA: ₹${(profile.basic_da || 0).toLocaleString('en-IN')}
-- HRA Received: ₹${(profile.hra_received || 0).toLocaleString('en-IN')}
-- Rent Paid: ₹${(profile.rent_paid || 0).toLocaleString('en-IN')}/month
-- Section 80C: ₹${(profile.section_80c || 0).toLocaleString('en-IN')}
-- Section 80D: ₹${(profile.section_80d || 0).toLocaleString('en-IN')}
-- NPS Personal: ₹${(profile.nps_personal || 0).toLocaleString('en-IN')}
-- Preferred Regime: ${profile.preferred_regime || 'Not set'}
-- Assets: ${JSON.stringify(profile.assets || {})}
-- Family: ${JSON.stringify(profile.family || {})}
-${historyText}
-
-RULES:
-1. Always give specific ₹ amounts based on this user's actual numbers
-2. Never give generic advice — personalise everything to this profile
-3. Cite the exact tax section (80C, 44ADA, etc.) for every recommendation
-4. If you're not sure about a rule, say so — don't hallucinate
-5. Keep answers clear, actionable, and in Indian context`;
+- 80C: ₹${(profile.section_80c || 0).toLocaleString('en-IN')} | 80D: ₹${(profile.section_80d || 0).toLocaleString('en-IN')} | NPS: ₹${(profile.nps_personal || 0).toLocaleString('en-IN')}
+- Regime: ${profile.preferred_regime || 'Not set'}
+${historyText}`;
 }
 
-// ── STEP 2: PLANNER ──
-// Gemini decides which tool to use next
-async function runPlanner(systemContext, userMessage, findings, toolsUsed) {
-  const availableTools = ['kb_search', 'web_search', 'tax_calculator', 'loophole_matcher', 'benefits_finder']
-    .filter(t => !toolsUsed.includes(t));
+// ── SMART TOOL PICKER (Rule-based — NO Gemini call) ──
+// Avoids 1 Gemini call by using keyword matching instead of AI planner
+function pickTool(userMessage) {
+  const msg = userMessage.toLowerCase();
 
-  if (availableTools.length === 0) return null;
-
-  const findingsSummary = findings.length > 0
-    ? `Findings so far:\n${findings.map(f => `- ${f.tool}: ${f.summary}`).join('\n')}`
-    : 'No findings yet.';
-
-  const prompt = `${systemContext}
-
-USER QUESTION: "${userMessage}"
-
-${findingsSummary}
-
-AVAILABLE TOOLS (pick ONE):
-${availableTools.map(t => `- ${t}`).join('\n')}
-
-Tool descriptions:
-- kb_search: Search DrainZero's verified tax knowledge base (60+ entries)
-- web_search: Search web for latest FY 2025-26 rules and Budget 2026 updates
-- tax_calculator: Calculate exact old vs new regime tax for this user
-- loophole_matcher: Find applicable legal tax loopholes for this user
-- benefits_finder: Find profession + state + family specific benefits
-
-Based on the user's question and findings so far, which tool should be used next?
-
-Respond ONLY with valid JSON, no markdown, no explanation:
-{
-  "tool": "tool_name_here",
-  "query": "specific search query or instruction",
-  "reason": "one sentence why this tool is needed"
-}`;
-
-  try {
-    return await askJSON(prompt);
-  } catch (e) {
-    console.error('[Planner] Failed:', e.message);
-    return null;
+  if (msg.includes('loophole') || msg.includes('legal') || msg.includes('trick') || msg.includes('save tax')) {
+    return { tool: 'loophole_matcher', query: userMessage };
   }
+  if (msg.includes('benefit') || msg.includes('scheme') || msg.includes('scholarship') || msg.includes('govt')) {
+    return { tool: 'benefits_finder', query: userMessage };
+  }
+  if (msg.includes('how much tax') || msg.includes('tax calculat') || msg.includes('old regime') || msg.includes('new regime') || msg.includes('which regime')) {
+    return { tool: 'tax_calculator', query: userMessage };
+  }
+  if (msg.includes('latest') || msg.includes('budget 2025') || msg.includes('budget 2026') || msg.includes('new rule') || msg.includes('recent')) {
+    return { tool: 'web_search', query: `${userMessage} India FY 2025-26` };
+  }
+  // Default — search knowledge base
+  return { tool: 'kb_search', query: userMessage };
 }
 
-// ── STEP 3: TOOL EXECUTOR ──
+// ── EXECUTE TOOL ──
 async function executeTool(toolName, query, profile) {
   switch (toolName) {
     case 'kb_search': {
-      const result = await searchKB(query, 5);
-      if (!result.results || result.results.length === 0) {
-        return { tool: toolName, data: null, summary: 'No KB results found' };
-      }
-      const summary = result.results
-        .map(r => `[${r.section}] ${r.title}: ${r.content.substring(0, 200)}`)
-        .join('\n');
+      const result = await searchKB(query, 4);
+      if (!result.results?.length) return { tool: toolName, data: null, summary: 'No KB results found', citations: [] };
+      const summary = result.results.map(r => `[${r.section}] ${r.title}: ${r.content.substring(0, 150)}`).join('\n');
       return {
-        tool   : toolName,
-        data   : result.results,
-        summary: trimResult(summary),
+        tool     : toolName,
+        data     : result.results,
+        summary  : trimResult(summary),
         citations: result.results.map(r => ({ section: r.section, title: r.title }))
       };
     }
-
     case 'web_search': {
-      const result = await webSearch(query, 5);
-      if (!result.results || result.results.length === 0) {
-        return { tool: toolName, data: null, summary: 'No web results found' };
-      }
-      const summary = result.results
-        .map(r => `${r.title}: ${r.snippet}`)
-        .join('\n');
-      return {
-        tool   : toolName,
-        data   : result.results,
-        summary: trimResult(summary)
-      };
+      const result = await webSearch(query, 4);
+      if (!result.results?.length) return { tool: toolName, data: null, summary: 'No web results found', citations: [] };
+      const summary = result.results.map(r => `${r.title}: ${r.snippet}`).join('\n');
+      return { tool: toolName, data: result.results, summary: trimResult(summary), citations: [] };
     }
-
     case 'tax_calculator': {
       try {
-        const result = calculateTax(profile);
-        const summary = `Old regime: ₹${result.oldRegime.totalTax.toLocaleString('en-IN')} | New regime: ₹${result.newRegime.totalTax.toLocaleString('en-IN')} | Recommended: ${result.recommendedRegime} | Saving: ₹${result.saving.toLocaleString('en-IN')} | Health score: ${result.healthScore}/100 | Leakage: ₹${result.totalLeakage.toLocaleString('en-IN')}`;
-        return {
-          tool   : toolName,
-          data   : result,
-          summary: trimResult(summary)
-        };
+        const result  = calculateTax(profile);
+        const summary = `Old: ₹${result.oldRegime.totalTax.toLocaleString('en-IN')} | New: ₹${result.newRegime.totalTax.toLocaleString('en-IN')} | Best: ${result.recommendedRegime} | Save: ₹${result.saving.toLocaleString('en-IN')} | Health: ${result.healthScore}/100`;
+        return { tool: toolName, data: result, summary, citations: [] };
       } catch (e) {
-        return { tool: toolName, data: null, summary: `Tax calculation error: ${e.message}` };
+        return { tool: toolName, data: null, summary: `Calculation error: ${e.message}`, citations: [] };
       }
     }
-
     case 'loophole_matcher': {
       try {
-        const result = matchLoopholes(profile);
-        const summary = `Found ${result.matchedCount} applicable loopholes: ${result.matched.map(l => l.title).join(', ')}`;
-        return {
-          tool   : toolName,
-          data   : result.matched,
-          summary: trimResult(summary)
-        };
+        const result  = matchLoopholes(profile);
+        const summary = `${result.matchedCount} loopholes: ${result.matched.map(l => l.title).join(', ')}`;
+        return { tool: toolName, data: result.matched, summary: trimResult(summary), citations: [] };
       } catch (e) {
-        return { tool: toolName, data: null, summary: `Loophole matching error: ${e.message}` };
+        return { tool: toolName, data: null, summary: `Error: ${e.message}`, citations: [] };
       }
     }
-
     case 'benefits_finder': {
       try {
-        const result = findBenefits(profile);
-        const summary = `Found ${result.matchedCount} benefits: ${result.matched.map(b => b.title).join(', ')}`;
-        return {
-          tool   : toolName,
-          data   : result.matched,
-          summary: trimResult(summary)
-        };
+        const result  = findBenefits(profile);
+        const summary = `${result.matchedCount} benefits: ${result.matched.map(b => b.title).join(', ')}`;
+        return { tool: toolName, data: result.matched, summary: trimResult(summary), citations: [] };
       } catch (e) {
-        return { tool: toolName, data: null, summary: `Benefits finder error: ${e.message}` };
+        return { tool: toolName, data: null, summary: `Error: ${e.message}`, citations: [] };
       }
     }
-
     default:
-      return { tool: toolName, data: null, summary: 'Unknown tool' };
+      return { tool: toolName, data: null, summary: 'Unknown tool', citations: [] };
   }
 }
 
-// ── STEP 4: EVALUATOR ──
-// Gemini checks if the goal has been achieved
-async function runEvaluator(systemContext, userMessage, findings) {
-  const findingsSummary = findings
-    .map(f => `Tool: ${f.tool}\nResult: ${f.summary}`)
-    .join('\n\n');
-
+// ── RESPONDER (1 Gemini call — the only AI call) ──
+async function runResponder(systemContext, userMessage, toolResult, profile) {
   const prompt = `${systemContext}
 
 USER QUESTION: "${userMessage}"
 
-FINDINGS COLLECTED SO FAR:
-${findingsSummary}
+TOOL USED: ${toolResult.tool}
+FINDINGS: ${toolResult.summary}
 
-Evaluate if we have enough information to fully answer the user's question.
+Write a helpful, personalised response. Use ₹ amounts from user profile.
 
-Consider:
-1. Do we have specific ₹ amounts if numbers were asked?
-2. Do we have the relevant tax sections/rules?
-3. Do we have personalised recommendations for THIS user's profile?
-4. Is there any critical missing information that would significantly change the answer?
-
-Respond ONLY with valid JSON, no markdown:
+Respond ONLY with valid JSON:
 {
-  "achieved": true or false,
-  "confidence": 0-100,
-  "missing": "what is still missing (empty string if achieved=true)",
-  "reason": "one sentence explanation"
+  "message": "Response text with line breaks (\\n). Specific ₹ amounts. Cite tax sections.",
+  "savingsFound": [{"title": "...", "section": "...", "amount": 0, "action": "..."}],
+  "actionCards": [{"type": "calculate|remind|profile|learn", "label": "...", "data": "..."}],
+  "recommendedRegime": "old|new|null",
+  "totalSaving": 0
 }`;
 
   try {
-    return await askJSON(prompt);
-  } catch (e) {
-    console.error('[Evaluator] Failed:', e.message);
-    // If evaluator fails, assume goal is achieved to prevent infinite loop
-    return { achieved: true, confidence: 60, missing: '', reason: 'Evaluator error — proceeding with available findings' };
-  }
-}
-
-// ── STEP 5: RESPONDER ──
-// Formats the final answer with action cards
-async function runResponder(systemContext, userMessage, findings, profile) {
-  const findingsSummary = findings
-    .map(f => `Tool: ${f.tool}\nResult: ${f.summary}`)
-    .join('\n\n');
-
-  // Collect KB citations from findings
-  const kbCitations = findings
-    .filter(f => f.citations)
-    .flatMap(f => f.citations);
-
-  const prompt = `${systemContext}
-
-USER QUESTION: "${userMessage}"
-
-VERIFIED FINDINGS:
-${findingsSummary}
-
-Based on the above verified findings and the user's profile, write a complete, helpful response.
-
-Format your response as JSON with this exact structure:
-{
-  "message": "Your main response text here. Use ₹ amounts. Be specific. Use line breaks (\\n) for readability.",
-  "savingsFound": [
-    {
-      "title": "Short title",
-      "section": "Tax section e.g. 80CCD(1B)",
-      "amount": 15000,
-      "action": "Exact step to take"
-    }
-  ],
-  "actionCards": [
-    {
-      "type": "calculate | remind | profile | learn",
-      "label": "Button label",
-      "data": "relevant data or route"
-    }
-  ],
-  "recommendedRegime": "old or new or null",
-  "totalSaving": 0
-}
-
-Rules:
-- savingsFound: list every specific saving opportunity found, with exact ₹ amounts
-- actionCards: max 3 cards — most important actions user should take
-- totalSaving: sum of all amounts in savingsFound
-- message: conversational, warm, specific to this user — not generic
-- If no savings found, still give helpful information in message`;
-
-  try {
     const result = await askJSON(prompt);
-    return { ...result, kbCitations };
+    return { ...result, kbCitations: toolResult.citations || [] };
   } catch (e) {
-    console.error('[Responder] JSON parse failed, falling back to text');
-    // Fallback — ask for plain text if JSON fails
-    const textPrompt = `${systemContext}
-    
-USER QUESTION: "${userMessage}"
-
-FINDINGS: ${findingsSummary}
-
-Give a helpful, specific answer based on the findings. Be concise.`;
-
-    const textResult = await ask(textPrompt);
+    // Fallback to plain text if JSON fails
+    const text = await ask(`${systemContext}\n\nQ: "${userMessage}"\nFindings: ${toolResult.summary}\n\nGive a helpful, concise answer.`);
     return {
-      message          : textResult,
+      message          : text,
       savingsFound     : [],
       actionCards      : [],
       recommendedRegime: null,
       totalSaving      : 0,
-      kbCitations      : []
+      kbCitations      : toolResult.citations || []
     };
   }
 }
 
 // ── MAIN AGENT FUNCTION ──
+// Total Gemini calls: 1 (responder only) — well within 10 RPM
 async function runAgent(userId, userMessage, onStatus = null) {
-  const startTime    = Date.now();
-  const toolsUsed    = [];
-  const findings     = [];
-  let   iteration    = 0;
-  let   goalAchieved = false;
-
-  // Helper to send status updates to frontend
-  const status = (msg) => {
-    console.log(`[Agent] ${msg}`);
-    if (onStatus) onStatus(msg);
-  };
+  const startTime = Date.now();
+  const status    = (msg) => { console.log(`[Agent] ${msg}`); if (onStatus) onStatus(msg); };
 
   try {
-    // ── Save user message ──
+    // Save user message
     await saveMessage(userId, 'user', userMessage);
 
-    // ── Step 1: Context Builder ──
-    status('Building your profile context...');
+    status('Loading your profile...');
     const profile       = await fetchProfile(userId);
     const history       = await fetchHistory(userId);
     const systemContext = buildSystemContext(profile, history);
 
-    status('Analysing your question...');
+    // Pick tool using rules (no Gemini call)
+    const { tool, query } = pickTool(userMessage);
+    status(`Searching ${tool.replace(/_/g, ' ')}...`);
 
-    // ── Main Loop ──
-    while (!goalAchieved && iteration < MAX_ITERATIONS) {
+    // Execute tool
+    const toolResult = await executeTool(tool, query, profile);
 
-      // Check timeout
-      if (Date.now() - startTime > TIMEOUT_MS) {
-        console.warn('[Agent] Timeout reached at iteration', iteration);
-        break;
-      }
+    // Small delay to respect rate limits
+    await sleep(500);
 
-      iteration++;
-      status(`Running analysis step ${iteration}...`);
+    // Generate response (1 Gemini call)
+    status('Preparing your answer...');
+    const response = await runResponder(systemContext, userMessage, toolResult, profile);
 
-      // ── Step 2: Planner ──
-      const plan = await runPlanner(systemContext, userMessage, findings, toolsUsed);
-
-      if (!plan || !plan.tool) {
-        console.warn('[Agent] Planner returned no tool — stopping loop');
-        break;
-      }
-
-      // ── Step 3: Tool Executor ──
-      status(`Searching ${plan.tool.replace('_', ' ')}...`);
-      const toolResult = await executeTool(plan.tool, plan.query, profile);
-      toolsUsed.push(plan.tool);
-      findings.push(toolResult);
-
-      // ── Step 4: Evaluator ──
-      status('Evaluating findings...');
-      const evaluation = await runEvaluator(systemContext, userMessage, findings);
-      goalAchieved = evaluation.achieved;
-
-      if (!goalAchieved && evaluation.missing) {
-        status(`Gathering more information...`);
-      }
-    }
-
-    // ── Step 5: Responder ──
-    status('Preparing your personalised answer...');
-    const response = await runResponder(systemContext, userMessage, findings, profile);
-
-    // ── Save AI response ──
+    // Save AI response
     await saveMessage(userId, 'ai', response.message, {
-      iterationsRun: iteration,
-      toolsUsed,
+      iterationsRun: 1,
+      toolsUsed    : [tool],
       actionCards  : response.actionCards || [],
       kbCitations  : response.kbCitations || []
     });
 
     return {
-      success        : true,
-      message        : response.message,
-      savingsFound   : response.savingsFound   || [],
-      actionCards    : response.actionCards    || [],
+      success          : true,
+      message          : response.message,
+      savingsFound     : response.savingsFound     || [],
+      actionCards      : response.actionCards      || [],
       recommendedRegime: response.recommendedRegime || null,
-      totalSaving    : response.totalSaving    || 0,
-      kbCitations    : response.kbCitations    || [],
+      totalSaving      : response.totalSaving      || 0,
+      kbCitations      : response.kbCitations      || [],
       meta: {
-        iterationsRun : iteration,
-        toolsUsed,
-        goalAchieved,
-        timeMs        : Date.now() - startTime,
-        partial       : !goalAchieved && iteration >= MAX_ITERATIONS
+        iterationsRun: 1,
+        toolsUsed    : [tool],
+        goalAchieved : true,
+        timeMs       : Date.now() - startTime,
+        partial      : false
       }
     };
 
   } catch (err) {
-    console.error('[Agent] Fatal error:', err.message);
-
-    // Save error message so chat history is not broken
-    await saveMessage(userId, 'ai', 'I encountered an error processing your request. Please try again.', {
-      iterationsRun: iteration,
-      toolsUsed
-    }).catch(() => {});
-
+    console.error('[Agent] Error:', err.message);
+    await saveMessage(userId, 'ai', 'I encountered an error. Please try again.', {}).catch(() => {});
     return {
       success: false,
       message: 'I encountered an error. Please try again in a moment.',
       error  : err.message,
-      meta   : { iterationsRun: iteration, toolsUsed, timeMs: Date.now() - startTime }
+      meta   : { timeMs: Date.now() - startTime }
     };
   }
 }
