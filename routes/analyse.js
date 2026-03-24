@@ -21,7 +21,16 @@ router.post('/', async (req, res) => {
       .eq('id', userId)
       .single();
 
-    if (userErr || !user) return res.status(404).json({ error: 'User not found' });
+    let finalUser = user;
+if (userErr || !user) {
+  const { data: newUser, error: insertErr } = await supabase
+    .from('users')
+    .insert({ id: userId, email: req.body.email || null })
+    .select()
+    .single();
+  if (insertErr) return res.status(500).json({ error: 'User creation failed' });
+  finalUser = newUser;
+}
 
     const { data: income, error: incErr } = await supabase
       .from('income_profile')
@@ -29,7 +38,16 @@ router.post('/', async (req, res) => {
       .eq('user_id', userId)
       .single();
 
-    if (incErr || !income) return res.status(404).json({ error: 'Income profile not found' });
+    let finalIncome = income;
+if (incErr || !income) {
+  const { data: newIncome, error: insertErr } = await supabase
+    .from('income_profile')
+    .insert({ user_id: userId })
+    .select()
+    .single();
+  if (insertErr) return res.status(500).json({ error: 'Income profile creation failed' });
+  finalIncome = newIncome;
+}
 
     // ── Merge user + income profile ──
     const profile = { ...user, ...income };
