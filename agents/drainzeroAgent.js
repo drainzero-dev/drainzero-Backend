@@ -70,7 +70,9 @@ async function fetchProfile(userId) {
   if (error || !user) throw new Error('User profile not found');
   const { data: income } = await supabase
     .from('income_profile').select('*').eq('user_id', userId).single();
-  return { ...user, ...(income || {}) };
+  const { data: taxResult } = await supabase
+    .from('tax_results').select('*').eq('user_id', userId).maybeSingle();
+  return { ...user, ...(income || {}), ...(taxResult || {}) };
 }
 
 // ── FETCH CONVERSATION HISTORY ──
@@ -115,6 +117,9 @@ USER PROFILE:
 - 80C: ₹${(profile.section_80c || 0).toLocaleString('en-IN')} | 80D: ₹${(profile.section_80d || 0).toLocaleString('en-IN')} | NPS: ₹${(profile.nps_personal || 0).toLocaleString('en-IN')}
 - HRA: ₹${(profile.hra_received || 0).toLocaleString('en-IN')} | Rent: ₹${(profile.rent_paid || 0).toLocaleString('en-IN')}
 - Preferred Regime: ${profile.preferred_regime || 'Not set'}
+- Last old regime tax: ₹${(profile.old_tax || 0).toLocaleString('en-IN')}
+- Last new regime tax: ₹${(profile.new_tax || 0).toLocaleString('en-IN')}
+- Last recommended regime: ${profile.recommended_regime || 'Unknown'}
 - City: ${profile.city || ''} | Metro: ${profile.is_metro ? 'Yes' : 'No'}
 ${historyText}`;
 }
@@ -233,7 +238,7 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 {
   "message": "Response with \\n line breaks. Cite tax sections. Use ₹ amounts from user profile.",
   "savingsFound": [{"title": "...", "section": "80C etc", "amount": 0, "action": "exact step"}],
-  "actionCards": [{"type": "calculate|remind|profile|learn", "label": "button text", "data": ""}],
+  "actionCards": ["Compare my regimes", "Show my best deductions", "How can I save more tax?"],
   "recommendedRegime": "old|new|null",
   "totalSaving": 0
 }`;
