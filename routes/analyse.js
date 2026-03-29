@@ -1,94 +1,94 @@
-const express = require('express');
-const router = express.Router();
-const supabase = require('../utils/supabase');
+// ─────────────────────────────────────────────
+//  routes/analyse.js
+//  POST /api/analyse
+//  Calculates tax, health score, leakage gaps
+// ─────────────────────────────────────────────
+
+const express          = require('express');
+const router           = express.Router();
+const supabase         = require('../utils/supabase');
 const { calculateTax } = require('../tools/taxCalculator');
-const { generateInsights } = require('../tools/insightEngine');
 
 router.post('/', async (req, res) => {
   try {
-    const { userId, email = null } = req.body;
+    const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
-    let { data: user, error: userErr } = await supabase
+    // ── Fetch user profile ──
+    const { data: user, error: userErr } = await supabase
       .from('users')
       .select('*')
       .eq('id', userId)
-      .maybeSingle();
+      .maybeSingle();                        // maybeSingle — won't throw if row missing
 
-    if (userErr) throw userErr;
+    let finalUser = user;
 
-    if (!user) {
-      const inserted = await supabase
+    if (userErr || !user) {
+      // First-time user — create a minimal row so analysis can continue
+      const { data: newUser, error: insertErr } = await supabase
         .from('users')
-        .upsert({
-          id: userId,
-          email,
-          onboarding_done: false,
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'id' })
-        .select('*')
+        .insert({ id: userId })
+        .select()
         .single();
 
-      if (inserted.error) throw inserted.error;
-      user = inserted.data;
+      if (insertErr) {
+        console.error('[analyse] Cannot create user row:', insertErr.message);
+        return res.status(500).json({ error: 'User not found and could not be created.' });
+      }
+      finalUser = newUser;
     }
 
-    let { data: income, error: incErr } = await supabase
+    // ── Fetch income profile ──
+    const { data: income, error: incErr } = await supabase
       .from('income_profile')
       .select('*')
       .eq('user_id', userId)
       .maybeSingle();
 
-    if (incErr) throw incErr;
+    let finalIncome = income;
 
-    if (!income) {
-      const insertedIncome = await supabase
+    if (incErr || !income) {
+      // No income profile yet — create a default one with zeros
+      const { data: newIncome, error: incInsertErr } = await supabase
         .from('income_profile')
-        .upsert({
-          user_id: userId,
-          gross_salary: 0,
-          basic_da: 0,
-          hra_received: 0,
-          preferred_regime: 'new'
-        }, { onConflict: 'user_id' })
-        .select('*')
+        .insert({ user_id: userId, gross_salary: 0 })
+        .select()
         .single();
 
-      if (insertedIncome.error) throw insertedIncome.error;
-      income = insertedIncome.data;
+      if (incInsertErr) {
+        console.error('[analyse] Cannot create income_profile:', incInsertErr.message);
+        return res.status(404).json({
+          error: 'Income profile not found. Please complete onboarding and add your income details.',
+        });
+      }
+      finalIncome = newIncome;
     }
 
-    const profile = { ...user, ...income };
+    // ── BUG FIX: was using stale `user` and `income`, now uses `finalUser`/`finalIncome` ──
+    const profile = { ...finalUser, ...finalIncome };
+
+    // ── Run tax calculation ──
     const result = calculateTax(profile);
-    const insights = generateInsights(profile, result);
-    const regimeExplanation = result.recommendedRegime === 'old'
-      ? 'Old regime is better because your current deduction profile reduces taxable income more effectively.'
-      : 'New regime is better because the lower slab structure plus standard deduction currently gives you a better outcome.';
 
-    const savePayload = {
-      user_id: userId,
-      old_tax: result.oldRegime.totalTax,
-      new_tax: result.newRegime.totalTax,
+    // ── Save result to Supabase ──
+    const { error: saveErr } = await supabase.from('tax_results').upsert({
+      user_id           : userId,
+      old_tax           : result.oldRegime.totalTax,
+      new_tax           : result.newRegime.totalTax,
       recommended_regime: result.recommendedRegime,
-      total_leakage: result.totalLeakage,
-      health_score: result.healthScore,
-      leakage_gaps: result.leakageGaps,
-      loopholes_matched: insights,
-      computed_at: new Date().toISOString()
-    };
+      total_leakage     : result.totalLeakage,
+      health_score      : result.healthScore,
+      leakage_gaps      : result.leakageGaps,
+      computed_at       : new Date().toISOString(),
+    }, { onConflict: 'user_id' });
 
-    const { error: saveErr } = await supabase
-      .from('tax_results')
-      .upsert(savePayload, { onConflict: 'user_id' });
+    if (saveErr) {
+      console.warn('[analyse] Could not save tax_results:', saveErr.message);
+      // Non-fatal — still return the result
+    }
 
-    if (saveErr) throw saveErr;
+    res.json({ success: true, ...result });
 
-    res.json({
-      success: true,
-      ...result,
-      insights,
-      regimeExplanation
-    });
   } catch (err) {
     console.error('[/api/analyse]', err.message);
     res.status(500).json({ error: err.message });
