@@ -167,7 +167,7 @@ function detectMismatches(profile, aisData) {
 
 // ── UPDATE PROFILE FROM EXTRACTED DATA ──
 // Auto-fills user's income profile with extracted document data
-async function updateProfileFromDoc(userId, docType, extractedData) {
+async function updateProfileFromDoc(userId, docType: resolvedDocType, extractedData) {
   if (docType === 'form16') {
     const updates = {};
     if (extractedData.grossSalary)    updates.gross_salary  = extractedData.grossSalary;
@@ -188,23 +188,24 @@ async function updateProfileFromDoc(userId, docType, extractedData) {
 // ── MAIN ROUTE ──
 router.post('/', async (req, res) => {
   try {
-    const { userId, docType, fileBase64, mimeType, fileName } = req.body;
+    const { userId, docType: resolvedDocType, fileType, fileBase64, mimeType, fileName } = req.body;
+    const resolvedDocType = docType || fileType;
 
     // ── Validation ──
     if (!userId)     return res.status(400).json({ error: 'userId is required' });
     if (!fileBase64) return res.status(400).json({ error: 'fileBase64 is required' });
-    if (!docType)    return res.status(400).json({ error: 'docType is required (form16, ais, itr, rent_receipt, loan_certificate, generic)' });
+    if (!resolvedDocType) return res.status(400).json({ error: 'docType is required (form16, ais, itr, rent_receipt, loan_certificate, generic)' });
 
     const validTypes = ['form16', 'ais', 'itr', 'rent_receipt', 'loan_certificate', 'generic'];
-    if (!validTypes.includes(docType)) {
+    if (!validTypes.includes(resolvedDocType)) {
       return res.status(400).json({ error: `Invalid docType. Use: ${validTypes.join(', ')}` });
     }
 
     const fileMimeType = mimeType || 'application/pdf';
-    const prompt       = PROMPTS[docType] || PROMPTS.generic;
+    const prompt       = PROMPTS[resolvedDocType] || PROMPTS.generic;
 
     // ── Extract with Gemini Vision ──
-    console.log(`[/api/documents] Extracting ${docType} for user ${userId}`);
+    console.log(`[/api/documents] Extracting ${resolvedDocType} for user ${userId}`);
     let extractedData;
 
     try {
@@ -217,13 +218,13 @@ router.post('/', async (req, res) => {
     }
 
     // ── Fetch user profile for mismatch detection ──
-    const { data: user }   = await supabase.from('users').select('*').eq('id', userId).single();
-    const { data: income } = await supabase.from('income_profile').select('*').eq('user_id', userId).single();
+    const { data: user }   = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+    const { data: income } = await supabase.from('income_profile').select('*').eq('user_id', userId).maybeSingle();
     const profile = { ...user, ...(income || {}) };
 
     // ── Detect mismatches (AIS only) ──
     let mismatches = [];
-    if (docType === 'ais' && extractedData && !extractedData.parseError) {
+    if (resolvedDocType === 'ais' && extractedData && !extractedData.parseError) {
       mismatches = detectMismatches(profile, extractedData);
     }
 
@@ -236,8 +237,8 @@ router.post('/', async (req, res) => {
       .from('documents')
       .insert({
         user_id       : userId,
-        doc_type      : docType,
-        file_path     : fileName || `${docType}_${Date.now()}`,
+        doc_type      : resolvedDocType,
+        file_path     : fileName || `${resolvedDocType}_${Date.now()}`,
         extracted_data: extractedData,
         ais_mismatches: mismatches,
         status        : 'processed',
@@ -252,22 +253,28 @@ router.post('/', async (req, res) => {
     }
 
     // ── Auto-update profile from Form 16 ──
-    if (docType === 'form16' && extractedData && !extractedData.parseError) {
-      await updateProfileFromDoc(userId, docType, extractedData);
+    if (resolvedDocType === 'form16' && extractedData && !extractedData.parseError) {
+      await updateProfileFromDoc(userId, resolvedDocType, extractedData);
     }
 
     // ── Response ──
     res.json({
       success      : true,
-      docType,
+      docType: resolvedDocType,
       extractedData,
       mismatches,
       mismatchCount: mismatches.length,
-      profileUpdated: docType === 'form16',
+      profileUpdated: resolvedDocType === 'form16',
       message      : mismatches.length > 0
         ? `Document processed. Found ${mismatches.length} mismatch(es) with your declared income — please review.`
         : 'Document processed successfully.',
-      docId        : docRecord?.id || null
+      docId        : docRecord?.id || null,
+      processedAt  : new Date().toISOString(),
+      summary      : resolvedDocType === 'form16'
+        ? 'Form 16 extracted successfully.'
+        : resolvedDocType === 'ais'
+          ? (mismatches.length ? `AIS processed with ${mismatches.length} mismatch(es).` : 'AIS processed successfully with no mismatches.')
+          : 'Document processed successfully.'
     });
 
   } catch (err) {
