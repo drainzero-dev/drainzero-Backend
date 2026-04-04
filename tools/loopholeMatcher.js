@@ -315,7 +315,33 @@ const LOOPHOLES = [
              (p.assets.rental_income || 0) > 0;
     },
     proTip: 'At ₹5L annual rent: single owner pays ~₹45K tax. Joint owners pay near-zero. Saves ₹45K immediately.'
-  }
+  },
+  {
+    id      : 'LH15',
+    title   : 'Corporate Car Lease — Company Pays, You Save',
+    section : 'Section 17(2)(iii) — Perquisite Rules',
+    category: 'Salary Structure',
+    risk    : 'Zero Risk',
+    savingMin: 60000,
+    savingMax: 300000,
+    savingNote: '₹60K–₹3L / year depending on CTC',
+    description: 'Instead of buying a car yourself (with post-tax money), have your company lease the car for you. The perquisite value added to your salary is only ₹1,800–₹2,400/month (₹28,800/year) — far less than the actual lease cost of ₹12,000–₹25,000/month. The company also gets full GST input credit on the lease, reducing business cost.',
+    steps: [
+      'Request your HR/employer to include a Car Lease allowance in CTC restructuring',
+      'Company signs the lease agreement directly with the car manufacturer/leasing company (Mahindra Fleet, Orix, ALD)',
+      'Car >1600cc: perquisite = ₹2,400/month (₹28,800/yr taxable). Car ≤1600cc: ₹1,800/month (₹21,600/yr taxable)',
+      'If driver provided: add ₹900/month to perquisite value',
+      'Company claims full lease rental as deductible business expense + 28% GST input credit',
+      'At end of lease (3–4 years), buy car at residual value (~15% of original price)'
+    ],
+    check: (p) => {
+      // Applicable to salaried employees with decent income
+      const isSalaried = (p.employment_type || '').toLowerCase().includes('salaried') ||
+                         (p.employment_type || '').toLowerCase().includes('government');
+      return isSalaried && (p.gross_salary || 0) >= 600000;
+    },
+    proTip: 'At ₹20L CTC, replacing ₹8L car purchase with a company lease saves ₹1.5–₹2L in tax. EV leases get Section 80EEB benefit too — stack both strategies.'
+  },
 ];
 
 // ── MAIN EXPORT ──
@@ -358,3 +384,6 @@ function matchLoopholes(profile) {
 }
 
 module.exports = { matchLoopholes, LOOPHOLES };
+
+// ── LOOPHOLE LH15 — appended ──
+// (Already exported above — we patch the array before module.exports)
