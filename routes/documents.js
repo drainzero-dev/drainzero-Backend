@@ -167,7 +167,7 @@ function detectMismatches(profile, aisData) {
 
 // ── UPDATE PROFILE FROM EXTRACTED DATA ──
 // Auto-fills user's income profile with extracted document data
-async function updateProfileFromDoc(userId, docType: resolvedDocType, extractedData) {
+async function updateProfileFromDoc(userId, docType, extractedData) {
   if (docType === 'form16') {
     const updates = {};
     if (extractedData.grossSalary)    updates.gross_salary  = extractedData.grossSalary;
@@ -188,7 +188,7 @@ async function updateProfileFromDoc(userId, docType: resolvedDocType, extractedD
 // ── MAIN ROUTE ──
 router.post('/', async (req, res) => {
   try {
-    const { userId, docType: resolvedDocType, fileType, fileBase64, mimeType, fileName } = req.body;
+    const { userId, docType, fileType, fileBase64, mimeType, fileName } = req.body;
     const resolvedDocType = docType || fileType;
 
     // ── Validation ──
