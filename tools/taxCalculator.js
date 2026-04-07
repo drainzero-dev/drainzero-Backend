@@ -144,25 +144,35 @@ function calculateTax(profile) {
   const recommendedRegime = oldTotal <= newTotal ? 'old' : 'new';
   const saving            = Math.abs(oldTotal - newTotal);
 
+  // Compute rebate amounts for display in frontend
+  const oldRebateApplied = getOldRegimeRebate(oldTaxable, oldRegimeTax(oldTaxable));
+  const newRebateApplied = getNewRegimeRebate(newTaxable, newRegimeTax(newTaxable));
+
   const oldResult = {
-    regime        : 'old',
-    taxableIncome : oldTaxable,
-    baseTax       : Math.round(oldTax),
-    surcharge     : Math.round(oldSurch),
-    cess          : Math.round(oldCess),
-    totalTax      : oldTotal,
-    deductions    : oldDed,
+    regime          : 'old',
+    taxableIncome   : oldTaxable,
+    slabTax         : Math.round(oldRegimeTax(oldTaxable)),  // pre-rebate slab tax
+    rebate87A       : Math.round(oldRebateApplied),
+    baseTax         : Math.round(oldTax),
+    surcharge       : Math.round(oldSurch),
+    cess            : Math.round(oldCess),
+    totalTax        : oldTotal,
+    deductions      : oldDed,
+    rebateApplied   : oldRebateApplied > 0,
     recommendedRegime,
   };
 
   const newResult = {
-    regime        : 'new',
-    taxableIncome : newTaxable,
-    baseTax       : Math.round(newTax),
-    surcharge     : Math.round(newSurch),
-    cess          : Math.round(newCess),
-    totalTax      : newTotal,
-    deductions    : { breakdown: { standardDeduction: newStd }, total: newStd },
+    regime          : 'new',
+    taxableIncome   : newTaxable,
+    slabTax         : Math.round(newRegimeTax(newTaxable)),  // pre-rebate slab tax
+    rebate87A       : Math.round(newRebateApplied),
+    baseTax         : Math.round(newTax),
+    surcharge       : Math.round(newSurch),
+    cess            : Math.round(newCess),
+    totalTax        : newTotal,
+    deductions      : { breakdown: { standardDeduction: newStd }, total: newStd },
+    rebateApplied   : newRebateApplied > 0,
     recommendedRegime,
   };
 
