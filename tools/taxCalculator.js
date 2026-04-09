@@ -209,4 +209,42 @@ function calculateTax(profile) {
   };
 }
 
-module.exports = { calculateTax, calcHRA, calcAdvanceTax, calcHealthScore };
+// ── VALIDATION: detect incorrect rebate/tax logic ──
+// Can be used by the agent to flag computation errors
+function validateTaxResult(result) {
+  const errors = [];
+
+  const oldTaxable = result.oldRegime.taxableIncome;
+  const newTaxable = result.newRegime.taxableIncome;
+  const oldTotal   = result.oldRegime.totalTax;
+  const newTotal   = result.newRegime.totalTax;
+
+  // Old regime: rebate only if taxable ≤ 5L
+  if (oldTotal === 0 && oldTaxable > 500000) {
+    errors.push('Incorrect rebate applied to Old Regime — taxable income exceeds ₹5L threshold');
+  }
+
+  // New regime: rebate only if taxable ≤ 12L (Budget 2025)
+  if (newTotal === 0 && newTaxable > 1200000) {
+    errors.push('Incorrect rebate applied to New Regime — taxable income exceeds ₹12L threshold');
+  }
+
+  // Both zero with non-trivial income is suspicious (not wrong, but worth flagging for display)
+  if (oldTotal === 0 && newTotal === 0 && oldTaxable > 250000) {
+    errors.push('Both regimes show zero tax — verify rebate logic before displaying');
+  }
+
+  return {
+    valid : errors.length === 0,
+    errors,
+    // Explain WHY zero (so UI can show proper message)
+    newRegimeZeroReason : (newTotal === 0 && newTaxable <= 1200000)
+      ? `Budget 2025 Section 87A rebate: taxable income ₹${newTaxable.toLocaleString()} is within ₹12L limit`
+      : null,
+    oldRegimeZeroReason : (oldTotal === 0 && oldTaxable <= 500000)
+      ? `Section 87A rebate: taxable income ₹${oldTaxable.toLocaleString()} is within ₹5L limit`
+      : null,
+  };
+}
+
+module.exports = { calculateTax, calcHRA, calcAdvanceTax, calcHealthScore, validateTaxResult };

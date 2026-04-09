@@ -10,7 +10,7 @@
 const express          = require('express');
 const router           = express.Router();
 const supabase         = require('../utils/supabase');
-const { calculateTax } = require('../tools/taxCalculator');
+const { calculateTax, validateTaxResult } = require('../tools/taxCalculator');
 
 router.post('/', async (req, res) => {
   try {
@@ -73,6 +73,12 @@ router.post('/', async (req, res) => {
     // ── Run tax calculation ──
     const result = calculateTax(profile);
 
+    // ── Validate result ──
+    const validation = validateTaxResult(result);
+    if (!validation.valid) {
+      console.warn('[analyse] Tax validation warnings:', validation.errors);
+    }
+
     // ── Persist result ──
     const { error: saveErr } = await supabase.from('tax_results').upsert({
       user_id           : userId,
@@ -90,7 +96,11 @@ router.post('/', async (req, res) => {
       console.warn('[analyse] Could not save tax_results:', saveErr.message);
     }
 
-    res.json({ success: true, ...result });
+    res.json({
+      success: true,
+      ...result,
+      validation,   // includes errors[], newRegimeZeroReason, oldRegimeZeroReason
+    });
 
   } catch (err) {
     console.error('[/api/analyse]', err.message);
