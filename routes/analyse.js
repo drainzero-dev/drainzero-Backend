@@ -14,7 +14,7 @@ const { calculateTax, validateTaxResult } = require('../tools/taxCalculator');
 
 router.post('/', async (req, res) => {
   try {
-    const { userId } = req.body;
+    const { userId, category, subcategory, formData: categoryFormData } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
 
     // ── Fetch user row ──
@@ -67,8 +67,15 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // ── Merge user + income — real data only ──
-    const profile = { ...finalUser, ...income };
+    // ── Merge user + income + category-specific form data ──
+    const profile = {
+      ...finalUser,
+      ...income,
+      // Category-specific fields from AnalysisForm (crypto, F&O, property, stocks)
+      ...(categoryFormData || {}),
+      category    : category    || finalUser.category    || '',
+      subcategory : subcategory || finalUser.subcategory || '',
+    };
 
     // ── Run tax calculation ──
     const result = calculateTax(profile);
