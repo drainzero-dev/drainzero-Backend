@@ -13,8 +13,8 @@ router.get('/', async (req, res) => {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
-    const { data: user }   = await supabase.from('users').select('*').eq('id', userId).single();
-    const { data: income } = await supabase.from('income_profile').select('*').eq('user_id', userId).single();
+    const { data: user }   = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+    const { data: income } = await supabase.from('income_profile').select('*').eq('user_id', userId).maybeSingle();
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 

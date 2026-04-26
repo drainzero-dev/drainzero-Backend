@@ -65,11 +65,17 @@ function trimResult(obj, maxChars = MAX_KB_CHARS) {
 
 // ── FETCH USER PROFILE ──
 async function fetchProfile(userId) {
-  const { data: user, error } = await supabase
-    .from('users').select('*').eq('id', userId).single();
-  if (error || !user) throw new Error('User profile not found');
+  // Use .maybeSingle() not .single() — .single() throws if row doesn't exist,
+  // crashing the chatbot for new users who haven't completed onboarding yet.
+  const { data: user, error: userErr } = await supabase
+    .from('users').select('*').eq('id', userId).maybeSingle();
+  if (userErr) throw new Error('Failed to fetch user profile: ' + userErr.message);
+  if (!user) throw new Error('Please complete your profile setup before using the AI assistant.');
+
+  // Income profile is optional — new users may not have it yet
   const { data: income } = await supabase
-    .from('income_profile').select('*').eq('user_id', userId).single();
+    .from('income_profile').select('*').eq('user_id', userId).maybeSingle();
+
   return { ...user, ...(income || {}) };
 }
 

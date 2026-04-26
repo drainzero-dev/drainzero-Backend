@@ -245,7 +245,7 @@ router.post('/', async (req, res) => {
         uploaded_at   : new Date().toISOString()
       })
       .select()
-      .single();
+      .maybeSingle();
 
     if (docError) {
       console.error('[Documents] DB save error:', docError.message);

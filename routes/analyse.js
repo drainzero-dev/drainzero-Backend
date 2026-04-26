@@ -29,20 +29,24 @@ router.post('/', async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch user: ' + userErr.message });
     }
 
-    // If no user row yet, create a minimal one (new Google login user)
+    // If no user row yet, the frontend ensurePublicUserRow should have created it.
+    // We do a lightweight upsert here as fallback — email may be null which is fine
+    // since auth.users is the source of truth for email.
     let finalUser = user;
     if (!user) {
       const { data: newUser, error: insertErr } = await supabase
         .from('users')
-        .insert({ id: userId })
+        .upsert({ id: userId, onboarding_done: false, onboarding_complete: false }, { onConflict: 'id' })
         .select()
-        .single();
+        .maybeSingle();
 
       if (insertErr) {
         console.error('[analyse] Cannot create user row:', insertErr.message);
-        return res.status(500).json({ error: 'User not found and could not be created.' });
+        // Don't block — proceed with minimal object so tax calc can still run
+        finalUser = { id: userId };
+      } else {
+        finalUser = newUser || { id: userId };
       }
-      finalUser = newUser;
     }
 
     // ── Fetch income profile ──
