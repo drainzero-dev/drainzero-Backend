@@ -95,11 +95,20 @@ router.post('/', async (req, res) => {
       user_id           : userId,
       old_tax           : result.oldRegime.totalTax,
       new_tax           : result.newRegime.totalTax,
+      old_taxable       : result.oldRegime.taxableIncome,
+      new_taxable       : result.newRegime.taxableIncome,
+      saving            : result.saving,
       recommended_regime: result.recommendedRegime,
       total_leakage     : result.totalLeakage,
       health_score      : result.healthScore,
       leakage_gaps      : result.leakageGaps,
+      advance_tax       : result.advanceTax       || {},
+      capital_gains     : result.capitalGains     || {},
+      category          : profile.category        || '',
+      subcategory       : profile.subcategory     || '',
+      validation        : validation              || {},
       computed_at       : new Date().toISOString(),
+      updated_at        : new Date().toISOString(),
     }, { onConflict: 'user_id' });
 
     if (saveErr) {
