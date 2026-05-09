@@ -21,7 +21,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = new GoogleGenAI({
+  apiKey     : process.env.GEMINI_API_KEY,
+  httpOptions: { apiVersion: 'v1' }   // text-embedding-004 is on v1 not v1beta
+});
 
 // ── Throttle: 1 embedding per 300ms to avoid rate limits ─────────────────
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));

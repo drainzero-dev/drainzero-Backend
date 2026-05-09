@@ -6,7 +6,10 @@
 const { GoogleGenAI } = require('@google/genai');
 const supabase        = require('../utils/supabase');
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }); // text-embedding-004 is the stable GA embedding model
+const ai = new GoogleGenAI({
+  apiKey     : process.env.GEMINI_API_KEY,
+  httpOptions: { apiVersion: 'v1' }   // text-embedding-004 is on v1 not v1beta
+});
 
 async function getEmbedding(text) {
   const result = await ai.models.embedContent({
