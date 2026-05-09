@@ -177,6 +177,11 @@ async function updateProfileFromDoc(userId, docType, extractedData) {
     if (extractedData.section80D)     updates.section_80d   = extractedData.section80D;
     if (extractedData.section80CCD1B) updates.nps_personal  = extractedData.section80CCD1B;
 
+    // Also update professional_tax if extracted
+    if (extractedData.professionalTax !== null && extractedData.professionalTax !== undefined) {
+      updates.professional_tax = extractedData.professionalTax;
+    }
+
     if (Object.keys(updates).length > 0) {
       await supabase
         .from('income_profile')

@@ -385,5 +385,3 @@ function matchLoopholes(profile) {
 
 module.exports = { matchLoopholes, LOOPHOLES };
 
-// ── LOOPHOLE LH15 — appended ──
-// (Already exported above — we patch the array before module.exports)

@@ -65,7 +65,7 @@ function trimResult(obj, maxChars = MAX_KB_CHARS) {
 
 // ── FETCH USER PROFILE ──
 async function fetchProfile(userId) {
-  // Use .maybeSingle() not .single() — .single() throws if row doesn't exist,
+  // Use .maybeSingle() — throws if row doesn't exist,
   // crashing the chatbot for new users who haven't completed onboarding yet.
   const { data: user, error: userErr } = await supabase
     .from('users').select('*').eq('id', userId).maybeSingle();
