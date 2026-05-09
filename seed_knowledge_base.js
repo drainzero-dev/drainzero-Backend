@@ -13,7 +13,6 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 require('dotenv').config();
-const { GoogleGenAI } = require('@google/genai');
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
@@ -21,21 +20,27 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-const ai = new GoogleGenAI({
-  apiKey     : process.env.GEMINI_API_KEY,
-  httpOptions: { apiVersion: 'v1' }   // text-embedding-004 is on v1 not v1beta
-});
-
 // ── Throttle: 1 embedding per 300ms to avoid rate limits ─────────────────
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// Direct REST API — bypasses SDK version issues entirely
 async function getEmbedding(text) {
-  const result = await ai.models.embedContent({
-    model   : 'text-embedding-004',
-    contents : text,
-    config  : { outputDimensionality: 768 }
+  const url = `https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=${process.env.GEMINI_API_KEY}`;
+  const res = await fetch(url, {
+    method : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body   : JSON.stringify({
+      model  : 'models/text-embedding-004',
+      content: { parts: [{ text }] },
+      outputDimensionality: 768
+    })
   });
-  return result.embeddings[0].values;
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Embedding API ${res.status}: ${err}`);
+  }
+  const data = await res.json();
+  return data.embedding.values;
 }
 
 // ════════════════════════════════════════════════════════════════════════════

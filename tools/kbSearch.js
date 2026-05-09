@@ -1,51 +1,38 @@
 // ─────────────────────────────────────────────
 //  tools/kbSearch.js
-//  Semantic search using pgvector + Gemini embeddings
+//  Full-text search using PostgreSQL match_knowledge_base function
 // ─────────────────────────────────────────────
 
-const { GoogleGenAI } = require('@google/genai');
-const supabase        = require('../utils/supabase');
-
-const ai = new GoogleGenAI({
-  apiKey     : process.env.GEMINI_API_KEY,
-  httpOptions: { apiVersion: 'v1' }   // text-embedding-004 is on v1 not v1beta
-});
-
-async function getEmbedding(text) {
-  const result = await ai.models.embedContent({
-    model   : 'text-embedding-004',
-    contents : text,
-    config  : { outputDimensionality: 768 }
-  });
-  return result.embeddings[0].values;
-}
+const supabase = require('../utils/supabase');
 
 async function searchKB(query, limit = 5) {
   try {
-    const embedding = await getEmbedding(query);
-
+    // Use PostgreSQL full-text search via the match_knowledge_base function
     const { data, error } = await supabase.rpc('match_knowledge_base', {
-      query_embedding: embedding,
-      match_threshold: 0.7,
-      match_count    : limit
+      query_text : query,
+      match_count: limit
     });
 
     if (error) throw error;
 
-    return {
-      results: data || [],
-      count  : (data || []).length,
-      query
-    };
-  } catch (err) {
-    console.error('[kbSearch] Semantic failed, falling back to text:', err.message);
+    // If full-text search returns nothing, fallback to ILIKE
+    if (!data || data.length === 0) {
+      const { data: fallback } = await supabase
+        .from('knowledge_base')
+        .select('id, title, category, content, section, tags, updated_fy')
+        .or(`title.ilike.%${query}%,content.ilike.%${query}%,section.ilike.%${query}%`)
+        .limit(limit);
+      return { results: fallback || [], count: (fallback || []).length, query };
+    }
 
+    return { results: data || [], count: (data || []).length, query };
+  } catch (err) {
+    console.error('[kbSearch] Search failed, using ILIKE fallback:', err.message);
     const { data } = await supabase
       .from('knowledge_base')
       .select('id, title, category, content, section, tags, updated_fy')
       .or(`title.ilike.%${query}%,content.ilike.%${query}%,section.ilike.%${query}%`)
       .limit(limit);
-
     return { results: data || [], count: (data || []).length, query };
   }
 }
