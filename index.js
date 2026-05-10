@@ -54,6 +54,7 @@ try {
   app.use('/api/loopholes', require('./routes/loopholes'));
   app.use('/api/benefits',  require('./routes/benefits'));
   app.use('/api/documents', require('./routes/documents'));
+  app.use('/api/profile',   require('./routes/profile'));
   console.log('All routes loaded successfully');
 } catch (err) {
   console.error('Route loading error:', err.message);
