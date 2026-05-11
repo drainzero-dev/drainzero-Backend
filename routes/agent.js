@@ -111,3 +111,39 @@ router.delete('/history', async (req, res) => {
 });
 
 module.exports = router;
+
+// ── POST /api/agent/search — RAG context only, no Gemini ──
+// Frontend calls this to get KB + profile context, then calls Gemini itself
+router.post('/search', async (req, res) => {
+  try {
+    const { userId, message } = req.body;
+    if (!userId || !message) return res.status(400).json({ error: 'userId and message required' });
+
+    const supabase    = require('../utils/supabase');
+    const { searchKB } = require('../tools/kbSearch');
+
+    // 1. Search knowledge base
+    const kbResult = await searchKB(message, 5);
+    const kbContext = (kbResult.results || [])
+      .map(r => `[${r.title}]\n${r.content}`)
+      .join('\n\n');
+
+    // 2. Get user profile
+    const { data: user }   = await supabase.from('users').select('name, employment_type, state, city').eq('id', userId).maybeSingle();
+    const { data: income } = await supabase.from('income_profile').select('gross_salary, section_80c, section_80d, nps_personal, hra_deduction, preferred_regime, bonus, other_income').eq('user_id', userId).maybeSingle();
+
+    // 3. Get last tax result
+    const { data: taxResult } = await supabase.from('tax_results').select('old_tax, new_tax, recommended_regime, health_score, saving').eq('user_id', userId).maybeSingle();
+
+    return res.json({
+      success   : true,
+      kbContext,
+      userProfile: user   || {},
+      incomeData : income || {},
+      taxResult  : taxResult || {},
+    });
+  } catch (err) {
+    console.error('[/api/agent/search]', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
