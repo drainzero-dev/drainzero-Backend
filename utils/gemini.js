@@ -1,75 +1,45 @@
-// ─────────────────────────────────────────────
-//  utils/gemini.js — Direct REST API (v1)
-//  Used ONLY by: drainzeroAgent (chatbot/RAG)
-//                documents (Form 16 vision)
-//  NOT used by: tax calculator, profile, analyse
-// ─────────────────────────────────────────────
+// utils/gemini.js — Direct REST API v1, chatbot + Form16 only
+const MODELS   = ['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite'];
+const BASE_URL = 'https://generativelanguage.googleapis.com/v1/models';
 
-// Primary: gemini-2.5-flash-lite (confirmed quota: 10 RPM / 20 RPD)
-// Fallback: gemini-3.1-flash-lite (500 RPD — better for demo)
-const CHAT_MODEL    = 'gemini-2.5-flash-lite';
-const VISION_MODEL  = 'gemini-2.5-flash-lite';
-const BASE_URL      = 'https://generativelanguage.googleapis.com/v1/models';
+function cleanJSON(t) { return t.replace(/```json/gi,'').replace(/```/g,'').trim(); }
 
-function cleanJSON(text) {
-  return text.replace(/```json/gi, '').replace(/```/g, '').trim();
-}
-
-async function callGemini(model, contents) {
+async function callGemini(contents) {
   const key = process.env.GEMINI_API_KEY;
-  const url = `${BASE_URL}/${model}:generateContent?key=${key}`;
-  const res = await fetch(url, {
-    method : 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body   : JSON.stringify({
-      contents,
-      generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
-    }),
-  });
-  if (!res.ok) {
+  for (const model of MODELS) {
+    const res = await fetch(`${BASE_URL}/${model}:generateContent?key=${key}`, {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify({ contents, generationConfig: { temperature: 0.3, maxOutputTokens: 1024 } }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    }
     const err = await res.text();
-    throw new Error(`Gemini API ${res.status}: ${err}`);
+    console.warn(`[Gemini] ${model} failed (${res.status}), trying next...`, err.substring(0,100));
   }
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  throw new Error('All Gemini models failed');
 }
 
-// ── Text call — used by chatbot agent only ──
 async function ask(prompt) {
-  return callGemini(CHAT_MODEL, [{ role: 'user', parts: [{ text: prompt }] }]);
+  return callGemini([{ role: 'user', parts: [{ text: prompt }] }]);
 }
 
-// ── JSON call — used by chatbot agent only ──
 async function askJSON(prompt) {
   const raw = await ask(prompt);
-  try {
-    return JSON.parse(cleanJSON(raw));
-  } catch (e) {
-    console.error('[Gemini] JSON parse failed:', raw?.substring(0, 200));
-    throw new Error('Gemini returned invalid JSON');
-  }
+  try { return JSON.parse(cleanJSON(raw)); }
+  catch { throw new Error('Gemini returned invalid JSON'); }
 }
 
-// ── Vision call — used by Form 16 upload only ──
 async function askVision(prompt, base64Data, mimeType = 'application/pdf') {
-  return callGemini(VISION_MODEL, [{
-    role : 'user',
-    parts: [
-      { text: prompt },
-      { inlineData: { data: base64Data, mimeType } }
-    ]
-  }]);
+  return callGemini([{ role:'user', parts:[{ text: prompt },{ inlineData:{ data: base64Data, mimeType }}]}]);
 }
 
-// ── Vision + JSON — used by Form 16 upload only ──
 async function askVisionJSON(prompt, base64Data, mimeType = 'application/pdf') {
   const raw = await askVision(prompt, base64Data, mimeType);
-  try {
-    return JSON.parse(cleanJSON(raw));
-  } catch (e) {
-    console.error('[Gemini Vision] JSON parse failed:', raw?.substring(0, 200));
-    throw new Error('Gemini Vision returned invalid JSON');
-  }
+  try { return JSON.parse(cleanJSON(raw)); }
+  catch { throw new Error('Gemini Vision returned invalid JSON'); }
 }
 
 module.exports = { ask, askJSON, askVision, askVisionJSON };
