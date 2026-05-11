@@ -1,25 +1,41 @@
-// utils/gemini.js — Direct REST API v1, chatbot + Form16 only
-const MODELS   = ['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite'];
-const BASE_URL = 'https://generativelanguage.googleapis.com/v1/models';
+// utils/gemini.js — chatbot + Form16 only
+// Tries multiple endpoints/models until one works
+
+const ATTEMPTS = [
+  { url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent' },
+  { url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent' },
+  { url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent' },
+];
 
 function cleanJSON(t) { return t.replace(/```json/gi,'').replace(/```/g,'').trim(); }
 
 async function callGemini(contents) {
   const key = process.env.GEMINI_API_KEY;
-  for (const model of MODELS) {
-    const res = await fetch(`${BASE_URL}/${model}:generateContent?key=${key}`, {
-      method : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify({ contents, generationConfig: { temperature: 0.3, maxOutputTokens: 1024 } }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  let lastErr = '';
+  for (const { url } of ATTEMPTS) {
+    try {
+      const res = await fetch(`${url}?key=${key}`, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({
+          contents,
+          generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (text) return text;
+      }
+      const err = await res.text().catch(() => res.statusText);
+      lastErr = `${url.split('/models/')[1].split(':')[0]}: ${res.status}`;
+      console.warn(`[Gemini] Failed — ${lastErr}`);
+    } catch (e) {
+      lastErr = e.message;
+      console.warn(`[Gemini] Error — ${lastErr}`);
     }
-    const err = await res.text();
-    console.warn(`[Gemini] ${model} failed (${res.status}), trying next...`, err.substring(0,100));
   }
-  throw new Error('All Gemini models failed');
+  throw new Error(`Gemini failed: ${lastErr}`);
 }
 
 async function ask(prompt) {
