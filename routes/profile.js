@@ -118,4 +118,24 @@ router.get('/load/:userId', async (req, res) => {
   }
 });
 
+// GET /api/profile/tax-result/:userId
+router.get('/tax-result/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const { data, error } = await supabase
+      .from('tax_results')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ result: data || null });
+  } catch (err) {
+    console.error('[profile/tax-result] error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
